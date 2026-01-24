@@ -1,0 +1,18 @@
+{
+  "name": "design-topics",
+  "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "run:lru": "node dist/01-LRU-Cache/main.js"
+  },
+  "devDependencies": {
+    "@types/node": "^25.0.10",
+    "typescript": "^5.4.0"
+  }
+}
