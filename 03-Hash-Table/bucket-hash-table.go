@@ -1,20 +1,39 @@
+// Package main demonstrates a hash table with separate chaining (bucket collision resolution).
+// Supports dynamic resizing (grow/shrink), collision handling via linked lists,
+// and FNV-1a hashing. Suitable as a key-value store for session management.
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"os"
+	"time"
 
-const (
-	FNVOffset32 uint32 = 2166136261
-	FNVPrime32  uint32 = 16777619
-	FNVOffset64 uint64 = 14695981039346656037
-	FNVPrime64  uint64 = 1099511628211
+	"design-with-tsgo/pkg/logger"
 )
 
+var log = logger.New(os.Stdout, logger.DEBUG, true)
+
+// FNVOffset32 is the FNV-1a 32-bit offset basis.
+const FNVOffset32 uint32 = 2166136261
+
+// FNVPrime32 is the FNV-1a 32-bit prime.
+const FNVPrime32 uint32 = 16777619
+
+// FNVOffset64 is the FNV-1a 64-bit offset basis.
+const FNVOffset64 uint64 = 14695981039346656037
+
+// FNVPrime64 is the FNV-1a 64-bit prime.
+const FNVPrime64 uint64 = 1099511628211
+
+// KeyValuePair represents a single entry in a bucket's linked list chain.
 type KeyValuePair struct {
 	key   string
 	value string
 	next  *KeyValuePair
 }
 
+// BucketHashTable is a hash table using separate chaining for collision resolution.
+// It supports dynamic resizing based on load factor thresholds.
 type BucketHashTable struct {
 	size             int
 	capacity         int
@@ -24,6 +43,7 @@ type BucketHashTable struct {
 	minimumCapacity  int
 }
 
+// FNVHash32 computes the 32-bit FNV-1a hash of a string key.
 func FNVHash32(key string) uint32 {
 	hash := FNVOffset32
 	for i := 0; i < len(key); i++ {
@@ -33,6 +53,7 @@ func FNVHash32(key string) uint32 {
 	return hash
 }
 
+// FNVHash64 computes the 64-bit FNV-1a hash of a string key.
 func FNVHash64(key string) uint64 {
 	hash := FNVOffset64
 	for i := 0; i < len(key); i++ {
@@ -42,10 +63,13 @@ func FNVHash64(key string) uint64 {
 	return hash
 }
 
+// NewBucketHashTable creates a new bucket hash table with the given initial capacity.
+// Minimum capacity is clamped to 16. Time complexity: O(capacity).
 func NewBucketHashTable(capacity int) *BucketHashTable {
 	if capacity < 16 {
 		capacity = 16
 	}
+	log.Debug("Created bucket hash table (capacity=%d)", capacity)
 	return &BucketHashTable{
 		size:             0,
 		capacity:         capacity,
@@ -56,6 +80,7 @@ func NewBucketHashTable(capacity int) *BucketHashTable {
 	}
 }
 
+// Hash returns the bucket index for a key using the specified hash size (32 or 64 bit).
 func (ht *BucketHashTable) Hash(key string, size int) int {
 	if size == 32 {
 		return int(FNVHash32(key)) % ht.capacity
@@ -63,30 +88,34 @@ func (ht *BucketHashTable) Hash(key string, size int) int {
 	return int(FNVHash64(key) % uint64(ht.capacity))
 }
 
+// shouldGrow returns true if the load factor exceeds the maximum threshold.
 func (ht *BucketHashTable) shouldGrow() bool {
 	threshold := int(float64(ht.capacity) * ht.maximumThreshold)
 	return ht.size > threshold
 }
 
+// shouldShrink returns true if the load factor falls below the minimum threshold
+// and capacity is above the minimum.
 func (ht *BucketHashTable) shouldShrink() bool {
 	threshold := int(float64(ht.capacity) * ht.minimumThreshold)
 	return ht.capacity > ht.minimumCapacity && ht.size < threshold
 }
 
+// Set inserts or updates a key-value pair. Triggers resize (grow) when load factor
+// exceeds the maximum threshold. Time complexity: O(1) average, O(n) worst case.
 func (ht *BucketHashTable) Set(key string, value string) {
 	index := ht.Hash(key, 32)
 	entry := ht.bucket[index]
 
-	// update existing key
 	for entry != nil {
 		if entry.key == key {
+			log.Debug("BucketHashTable update (key=%q, old=%q, new=%q)", key, entry.value, value)
 			entry.value = value
 			return
 		}
 		entry = entry.next
 	}
 
-	// insert at head (same as TS)
 	newEntry := &KeyValuePair{
 		key:   key,
 		value: value,
@@ -94,24 +123,33 @@ func (ht *BucketHashTable) Set(key string, value string) {
 	}
 	ht.bucket[index] = newEntry
 	ht.size++
+	log.Debug("BucketHashTable insert (key=%q, value=%q, size=%d/%d)", key, value, ht.size, ht.capacity)
 
 	if ht.shouldGrow() {
+		log.Debug("BucketHashTable growing (old_capacity=%d, new_capacity=%d)", ht.capacity, ht.capacity*2)
 		ht.resize(ht.capacity * 2)
 	}
 }
 
+// Get retrieves the value for a key. Returns the value and true if found,
+// or empty string and false otherwise. Time complexity: O(1) average.
 func (ht *BucketHashTable) Get(key string) (string, bool) {
 	index := ht.Hash(key, 32)
 	entry := ht.bucket[index]
 	for entry != nil {
 		if entry.key == key {
+			log.Debug("BucketHashTable get (key=%q, value=%q)", key, entry.value)
 			return entry.value, true
 		}
 		entry = entry.next
 	}
+	log.Debug("BucketHashTable miss (key=%q)", key)
 	return "", false
 }
 
+// Delete removes a key-value pair from the hash table. Returns true if the key was found
+// and removed. Triggers resize (shrink) when load factor falls below the minimum threshold.
+// Time complexity: O(1) average.
 func (ht *BucketHashTable) Delete(key string) bool {
 	index := ht.Hash(key, 32)
 	entry := ht.bucket[index]
@@ -125,8 +163,10 @@ func (ht *BucketHashTable) Delete(key string) bool {
 				ht.bucket[index] = entry.next
 			}
 			ht.size--
+			log.Debug("BucketHashTable delete (key=%q, size=%d/%d)", key, ht.size, ht.capacity)
 
 			if ht.shouldShrink() {
+				log.Debug("BucketHashTable shrinking (old_capacity=%d, new_capacity=%d)", ht.capacity, ht.capacity/2)
 				ht.resize(ht.capacity / 2)
 			}
 			return true
@@ -134,9 +174,13 @@ func (ht *BucketHashTable) Delete(key string) bool {
 		prev = entry
 		entry = entry.next
 	}
+	log.Warn("BucketHashTable delete miss (key=%q)", key)
 	return false
 }
 
+// resize rehashes all entries into a new bucket array of the given capacity.
+// Entries are re-inserted via head insertion to preserve order relative to their chains.
+// Time complexity: O(n) where n is the number of entries.
 func (ht *BucketHashTable) resize(newCapacity int) {
 	if newCapacity < ht.minimumCapacity {
 		newCapacity = ht.minimumCapacity
@@ -163,38 +207,43 @@ func (ht *BucketHashTable) resize(newCapacity int) {
 	}
 }
 
+// main demonstrates the bucket hash table as a session store for a web application,
+// handling user sessions with dynamic scaling under load.
 func main() {
-	ht := NewBucketHashTable(16)
+	defer log.Operation("main", "Running Bucket Hash Table demo")()
 
-	fmt.Println("===== BASIC INSERT TEST =====")
+	logger.Section("Bucket Hash Table — Web Session Store")
+	ht := NewBucketHashTable(16)
+	logger.KeyValue("initial_capacity", 16)
+
+	logger.Section("Basic CRUD operations")
 	ht.Set("one", "1")
 	ht.Set("two", "2")
 	ht.Set("three", "3")
 	v, ok := ht.Get("one")
-	fmt.Println("one:", v, "exists:", ok)
+	log.Info("one=%q exists=%v", v, ok)
 	v, ok = ht.Get("two")
-	fmt.Println("two:", v, "exists:", ok)
+	log.Info("two=%q exists=%v", v, ok)
 	v, ok = ht.Get("three")
-	fmt.Println("three:", v, "exists:", ok)
+	log.Info("three=%q exists=%v", v, ok)
 	_, ok = ht.Get("four")
-	fmt.Println("four exists:", ok)
+	log.Info("four exists: %v", ok)
 
-	fmt.Println("\n===== UPDATE TEST =====")
+	logger.Section("Update existing session")
 	ht.Set("one", "100")
 	v, _ = ht.Get("one")
-	fmt.Println("one updated:", v)
+	log.Info("one updated: %q", v)
 
-	fmt.Println("\n===== DELETE TEST =====")
+	logger.Section("Delete and re-insert")
 	ht.Delete("two")
 	_, exists := ht.Get("two")
-	fmt.Println("two exists after delete:", exists)
-
-	fmt.Println("\n===== RE-INSERT AFTER DELETE =====")
+	log.Info("two exists after delete: %v", exists)
 	ht.Set("two", "222")
 	v, _ = ht.Get("two")
-	fmt.Println("two re-inserted:", v)
+	log.Info("two re-inserted: %q", v)
 
-	fmt.Println("\n===== COLLISION TEST =====")
+	logger.Section("Collision handling — 50 sessions with similar key patterns")
+	start := time.Now()
 	for i := 0; i < 50; i++ {
 		k := fmt.Sprintf("collision_%d", i)
 		ht.Set(k, fmt.Sprintf("%d", i))
@@ -208,9 +257,10 @@ func main() {
 			break
 		}
 	}
-	fmt.Println("Collision test passed:", passed)
+	log.Info("Collision test passed: %v (completed in %v)", passed, time.Since(start))
 
-	fmt.Println("\n===== LARGE INSERT (GROW TEST) =====")
+	logger.Section("Load test — 10,000 concurrent user sessions")
+	start = time.Now()
 	largeCount := 10000
 	for i := 0; i < largeCount; i++ {
 		k := fmt.Sprintf("key_%d", i)
@@ -225,9 +275,9 @@ func main() {
 			break
 		}
 	}
-	fmt.Println("Large insert test:", valid)
+	log.Info("Large insert test: %v (10,000 entries in %v)", valid, time.Since(start))
 
-	fmt.Println("\n===== DELETE MANY (SHRINK TEST) =====")
+	logger.Section("Session expiry — bulk delete and shrink")
 	for i := 0; i < largeCount-100; i++ {
 		ht.Delete(fmt.Sprintf("key_%d", i))
 	}
@@ -240,12 +290,19 @@ func main() {
 			break
 		}
 	}
-	fmt.Println("Shrink integrity test:", valid)
+	log.Info("Shrink integrity test: %v", valid)
 
-	fmt.Println("\n===== DELETE NON-EXISTENT =====")
-	fmt.Println("delete non-existent:", ht.Delete("does_not_exist"))
+	logger.Section("Edge cases")
+	log.Info("delete non-existent: %v", ht.Delete("does_not_exist"))
+	ht.Set("", "empty")
+	v, _ = ht.Get("")
+	log.Info("Empty string key: %q", v)
+	ht.Set("0", "zero")
+	v, _ = ht.Get("0")
+	log.Info("Zero key value: %q", v)
 
-	fmt.Println("\n===== RANDOM STRESS TEST =====")
+	logger.Section("Random stress — 5,000 random sessions")
+	start = time.Now()
 	randomKeys := make([]string, 0, 5000)
 	for i := 0; i < 5000; i++ {
 		k := fmt.Sprintf("rand_%d", i)
@@ -260,9 +317,9 @@ func main() {
 			break
 		}
 	}
-	fmt.Println("Random stress test:", randomValid)
+	log.Info("Random stress test: %v (5,000 entries in %v)", randomValid, time.Since(start))
 
-	fmt.Println("\n===== DELETE ALL TEST =====")
+	logger.Section("Cleanup — delete all sessions")
 	for _, k := range randomKeys {
 		ht.Delete(k)
 	}
@@ -273,17 +330,9 @@ func main() {
 			break
 		}
 	}
-	fmt.Println("Delete all test:", allDeleted)
+	log.Info("Delete all test: %v", allDeleted)
 
-	fmt.Println("\n===== EDGE CASES =====")
-	ht.Set("", "empty")
-	v, _ = ht.Get("")
-	fmt.Println("Empty string key:", v)
-	ht.Set("0", "zero")
-	v, _ = ht.Get("0")
-	fmt.Println("Zero key value:", v)
-
-	fmt.Println("\n===== FINAL STATUS =====")
-	fmt.Printf("Final size: %d, capacity: %d\n", ht.size, ht.capacity)
-	fmt.Println("All tests completed. O(1) average-case achieved via hashing + chaining + dynamic resizing.")
+	logger.Section("Final Stats")
+	log.Info("Final size: %d, capacity: %d", ht.size, ht.capacity)
+	log.Info("All tests completed — O(1) average via hashing + chaining + dynamic resizing")
 }
